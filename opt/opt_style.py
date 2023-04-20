@@ -505,39 +505,47 @@ if args.enable_random:
 
 
 ###### resize style image such that its long side matches the long side of content images
-style_img = imageio.imread(args.style).astype(np.float32) / 255.0
-style_h, style_w = style_img.shape[:2]
-content_long_side = max([dset.w, dset.h])
-if style_h > style_w:
+def get_style_img(file_path):
+    style_img = imageio.imread(file_path).astype(np.float32) / 255.0
+    style_h, style_w = style_img.shape[:2]
+    content_long_side = max([dset.w, dset.h])
+    if style_h > style_w:
+        style_img = cv2.resize(
+            style_img,
+            (int(content_long_side / style_h * style_w), content_long_side),
+            interpolation=cv2.INTER_AREA,
+        )
+    else:
+        style_img = cv2.resize(
+            style_img,
+            (content_long_side, int(content_long_side / style_w * style_h)),
+            interpolation=cv2.INTER_AREA,
+        )
     style_img = cv2.resize(
         style_img,
-        (int(content_long_side / style_h * style_w), content_long_side),
+        #(style_img.shape[1] // 2, style_img.shape[0] // 2),
+        (504,504),
         interpolation=cv2.INTER_AREA,
     )
-else:
-    style_img = cv2.resize(
-        style_img,
-        (content_long_side, int(content_long_side / style_w * style_h)),
-        interpolation=cv2.INTER_AREA,
+    imageio.imwrite(
+        os.path.join(args.train_dir, "style_image.png"),
+        np.clip(style_img * 255.0, 0.0, 255.0).astype(np.uint8),
     )
-style_img = cv2.resize(
-    style_img,
-    (style_img.shape[1] // 2, style_img.shape[0] // 2),
-    interpolation=cv2.INTER_AREA,
-)
-imageio.imwrite(
-    os.path.join(args.train_dir, "style_image.png"),
-    np.clip(style_img * 255.0, 0.0, 255.0).astype(np.uint8),
-)
-style_img = torch.from_numpy(style_img).to(device=device)
-ic("Style image: ", args.style, style_img.shape)
+    style_img = torch.from_numpy(style_img).to(device=device).unsqueeze(0)
+    return style_img
+
+style1 = get_style_img("../data/styles/19.jpg")
+style2 = get_style_img("../data/styles/7.jpg")
+print(style1.shape, style2.shape)
+styles = torch.cat((style1,style2),0)
+ic("Style image: ", args.style, styles.shape)
 
 
 global_start_time = datetime.now()
 
-if not args.no_pre_ct:
-    dset.rays.gt, color_tf = match_colors_for_image_set(dset.rays.gt, style_img)
-    grid.apply_ct(color_tf.detach().cpu().numpy())
+# if not args.no_pre_ct:
+#     dset.rays.gt, color_tf = match_colors_for_image_set(dset.rays.gt, style_img)
+#     grid.apply_ct(color_tf.detach().cpu().numpy())
 
 epoch_id = 0
 epoch_size = None
@@ -618,7 +626,7 @@ while True:
                             scale_factor=0.5,
                             mode="bilinear",
                         ),
-                        style_img.permute(2, 0, 1).unsqueeze(0),
+                        styles.permute(0, 3, 1, 2),
                         blocks=[
                             args.vgg_block,
                         ],
@@ -655,7 +663,8 @@ while True:
 
                 # Stats
                 for x in loss_dict:
-                    stats[x] = loss_dict[x].item()
+                    print(x, loss_dict[x])
+                    stats[x] = loss_dict[x]
 
             if (iter_id + 1) % args.print_every == 0:
                 log_str = ""
@@ -787,8 +796,8 @@ while True:
                     )
                     rgb_pred = grid.volume_render_image(cam, use_kernel=True)
                     rgb_gt[img_id] = rgb_pred.reshape(view_height, view_width, 3).contiguous().cpu().clamp_(0.0, 1.0)
-            dset.rays.gt, color_tf = match_colors_for_image_set(dset.rays.gt, style_img)
-            grid.apply_ct(color_tf.detach().cpu().numpy())
+            # dset.rays.gt, color_tf = match_colors_for_image_set(dset.rays.gt, style_img)
+            # grid.apply_ct(color_tf.detach().cpu().numpy())
 
         global_stop_time = datetime.now()
         secs = (global_stop_time - global_start_time).total_seconds()
