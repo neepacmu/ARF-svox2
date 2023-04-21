@@ -20,6 +20,7 @@ import cv2
 from util.dataset import datasets
 from util.util import get_expon_lr_func
 from util import config_util
+import pdb
 
 from warnings import warn
 from datetime import datetime
@@ -534,7 +535,9 @@ def get_style_img(file_path):
     style_img = torch.from_numpy(style_img).to(device=device).unsqueeze(0)
     return style_img
 
-style1 = get_style_img("../data/styles/19.jpg")
+
+## change Style
+style1 = get_style_img("../data/styles/128.jpg")
 style2 = get_style_img("../data/styles/7.jpg")
 print(style1.shape, style2.shape)
 styles = torch.cat((style1,style2),0)
@@ -805,6 +808,8 @@ while True:
         timings_file.write(f"{secs / 60}\n")
         timings_file.close()
 
+        
+        #pdb.set_trace()
         ckpt_path = path.join(args.train_dir, "ckpt.npz")
         grid.save(ckpt_path)
 

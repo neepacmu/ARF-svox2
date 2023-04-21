@@ -12,7 +12,7 @@ from os import path
 from util.dataset import datasets
 from util.util import Timing, compute_ssim, viridis_cmap
 from util import config_util
-
+import pdb
 import imageio
 import cv2
 from tqdm import tqdm
@@ -111,6 +111,7 @@ if args.ray_len:
 dset = datasets[args.dataset_type](args.data_dir, split="test_train" if args.train else "test",
                                     **config_util.build_data_options(args))
 
+#pdb.set_trace()
 grid = svox2.SparseGrid.load(args.ckpt, device=device)
 
 if grid.use_background:

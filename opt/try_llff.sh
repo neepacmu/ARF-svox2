@@ -17,7 +17,7 @@ python opt_style.py -t ${ckpt_arf} ${data_dir} \
                 -c configs/llff_fixgeom.json \
                 --init_ckpt ${ckpt_svox2}/ckpt.npz \
                 --style ${style_img} \
-                --mse_num_epoches 2 --nnfm_num_epoches 10 \
+                --mse_num_epoches 2 --nnfm_num_epoches 6 \
                 --content_weight 1e-3 
 
 python render_imgs.py ${ckpt_arf}/ckpt.npz ${data_dir} \

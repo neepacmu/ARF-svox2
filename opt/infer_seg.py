@@ -11,6 +11,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from PIL import Image
 from torch import nn
 from torchvision.models import resnet50
+import pdb
 
 from os import listdir
 from os.path import isfile, join
@@ -310,7 +311,7 @@ masks_prev = None
 boxes_prev = None
 out_img_prev = None
 
-def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/llff/room_19/masked/", filename='DJI_20200226_143948_113.JPG'):
+def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/llff/room_14/masked/", filename='DJI_20200226_143948_113.JPG'):
     img = transform(im).unsqueeze(0)
     # print("inside SAM img shape = ", img.shape)
 
@@ -321,6 +322,7 @@ def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/l
     probas = outputs["pred_logits"].softmax(-1)[0, :, :-1]
     keep = probas.max(-1).values > 0.6
 
+    #pdb.set_trace()
     if(probas[keep].shape[0]==0):
         return masks_prev, boxes_prev, out_img_prev
 
@@ -359,14 +361,14 @@ def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/l
     plt.axis('off')
     # plt.show()
     name = folder + 'orig_' + filename[-7:-4] + '.png'
-    plt.savefig(name)
+    #plt.savefig(name)
 
     for mask in masks:
         show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
         
         now = datetime.datetime.now()
     name = folder + 'masked_' + str(now) + '.png'
-    plt.savefig(name)
+    #plt.savefig(name)
     plt.close()
         
     for box in bboxes_scaled:

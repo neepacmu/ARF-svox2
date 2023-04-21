@@ -243,7 +243,10 @@ class NNFMLoss(torch.nn.Module):
         img = transform(outputs.squeeze()) # 1, 3, 378, 504
         img_content = transform(contents.squeeze())
 
-        masks_all, _, _ = sam_wrapper(img_content, class_idx = [72, 67])
+        masks_all, _, _ = sam_wrapper(img_content, class_idx = [72, 67]) # 67
+
+        #pdb.set_trace()
+
         # print("masks.shape = ", masks.shape)
         # print(outputs.shape)
         #masks_all = masks_all.squeeze()
@@ -253,34 +256,25 @@ class NNFMLoss(torch.nn.Module):
                 continue
             masks = masks_all[iter].squeeze()
             non_z_idxs = torch.nonzero(masks)
-            print("masks.shape = ", masks.shape)
+            #print("masks.shape = ", masks.shape)
             non_z_idxs = (non_z_idxs/4).to(torch.long) - 1 #/4 because the features are (1/4)th size of image space
             
+            masked_outputs = outputs.clone()
             unmasked_outputs = outputs.clone()
-            #print(unmasked_outputs.shape)
-            unmasked_outputs[:, :, masks==0] = 0
 
-            outputs[:, :, masks!=0] = 0
+            #print(unmasked_outputs.shape)
+            unmasked_outputs[:, :, masks!=0] = 0 # NON_TV
+            masked_outputs[:, :, masks==0] = 0 # TV
 
             # Gets features from rendered output 
-            x_feats_all = self.get_feats(outputs, all_layers)
+            x_feats_all = self.get_feats(masked_outputs, all_layers)
 
             # print("x_feats_all[0].shape = ", x_feats_all[0].shape)
-            unmasked_x_feats_all = self.get_feats(unmasked_outputs, all_layers)
+            masked_x_feats_all = self.get_feats(masked_outputs, all_layers)
 
             feature_mask = torch.zeros_like(x_feats_all[0])
-            #print(feature_mask.shape)
             for idx in non_z_idxs:
                 feature_mask[:, :, idx[0], idx[1]] = 1
-
-            masked_feats_all = []
-
-            for x_feat in x_feats_all:
-                temp_feat = (x_feat).clone()
-                temp_feat_vals = temp_feat[feature_mask!=0].view(1, 256, -1)
-
-                masked_feats_all.append(temp_feat_vals) #check if reshape needed
-
             
             with torch.no_grad():
                 s_feats_all = self.get_feats(styles[iter:iter+1], all_layers)
@@ -293,13 +287,13 @@ class NNFMLoss(torch.nn.Module):
 
             # pdb.set_trace()
             loss_dict = dict([(x, 0.) for x in loss_names])
+            # x_feats = rendered_output features (unmasked area)
+            # s_feats = style features 
             for block in blocks:
                 layers = block_indexes[block]
                 x_feats = torch.cat([x_feats_all[ix_map[ix]] for ix in layers], 1)
                 s_feats = torch.cat([s_feats_all[ix_map[ix]] for ix in layers], 1)
-                masked_feats = torch.cat([masked_feats_all[ix_map[ix]] for ix in layers], 1)
-
-                unmasked_feats = torch.cat([unmasked_x_feats_all[ix_map[ix]] for ix in layers], 1)
+                masked_feats = torch.cat([masked_x_feats_all[ix_map[ix]] for ix in layers], 1)
 
                 if "nnfm_loss" in loss_names:
                     # target_feats = nn_feat_replace(x_feats, s_feats)
@@ -307,13 +301,13 @@ class NNFMLoss(torch.nn.Module):
                     # loss_dict["nnfm_loss"] += cos_loss(x_feats, target_feats)
                     # loss_dict["nnfm_loss"] += cos_loss(masked_feats, masked_target_feats)
 
-                    unmasked_target_feats = nn_feat_replace(unmasked_feats, s_feats)
-                    loss_dict["nnfm_loss"] += cos_loss(unmasked_feats, unmasked_target_feats)
+                    unmasked_target_feats = nn_feat_replace(masked_feats, s_feats)
+                    loss_dict["nnfm_loss"] += cos_loss(masked_feats, unmasked_target_feats)
 
                 if "gram_loss" in loss_names:
                     # loss_dict["gram_loss"] += torch.mean((gram_matrix(x_feats) - gram_matrix(s_feats)) ** 2)
                     # loss_dict["gram_loss"] += torch.mean((gram_matrix_mask(masked_feats) - gram_matrix(s_feats)) ** 2)
-                    loss_dict["gram_loss"] += torch.mean((gram_matrix_mask(unmasked_feats) - gram_matrix(s_feats)) ** 2)
+                    loss_dict["gram_loss"] += torch.mean((gram_matrix_mask(masked_feats) - gram_matrix(s_feats)) ** 2)
 
                 if "content_loss" in loss_names and iter == masks_all.shape[0]-1:
                     content_feats = torch.cat([content_feats_all[ix_map[ix]] for ix in layers], 1)
