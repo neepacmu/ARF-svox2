@@ -218,6 +218,21 @@ class NNFMLoss(torch.nn.Module):
 
         return outputs
 
+    def merge_masks(self, masks, ids):
+        """
+        Get semantic masks instead of instance mask
+        """
+        n, c, w, h = masks.shape
+        unique_ids = torch.unique(ids)
+        masks_merged = torch.zeros((len(unique_ids), c, w, h)).to(torch.bool).to(masks.device)
+        for i in range(n):
+            class_id = unique_ids.tolist().index(ids[i])
+            non_zero = masks[i, :, :, :] !=0
+            # copy mask of the class
+            masks_merged[class_id, non_zero] = masks[i, non_zero]
+
+        # Tested with Fig save
+        return masks_merged
     def forward(
         self,
         outputs,
@@ -227,6 +242,7 @@ class NNFMLoss(torch.nn.Module):
         ],
         loss_names=["nnfm_loss"],  # can also include 'gram_loss', 'content_loss'
         contents=None,
+        class_idxs = [72, 67, 62],
     ):
         for x in loss_names:
             assert x in ['nnfm_loss', 'content_loss', 'gram_loss']
@@ -243,33 +259,36 @@ class NNFMLoss(torch.nn.Module):
         img = transform(outputs.squeeze()) # 1, 3, 378, 504
         img_content = transform(contents.squeeze())
 
-        masks_all, _, _ = sam_wrapper(img_content, class_idx = [72, 67]) # 67
+        masks_all, _, _, mask_ids = sam_wrapper(img_content, class_idx = class_idxs) # 67
+        masks_merged = self.merge_masks(masks_all, mask_ids)
+        
+        # assert that for number of class is less that styles
+        assert masks_merged.shape[0] <= styles.shape[0]
+        #print(masks_merged.shape[0], styles.shape[0])
 
-        #pdb.set_trace()
+        loss_dict = dict([(x, 0.) for x in loss_names])
 
-        # print("masks.shape = ", masks.shape)
-        # print(outputs.shape)
-        #masks_all = masks_all.squeeze()
-        for iter in range(styles.shape[0]):
-        # pdb.set_trace()
-            if iter >= masks_all.shape[0]:
-                continue
-            masks = masks_all[iter].squeeze()
+        for iter in range(masks_merged.shape[0]):
+
+            masks = masks_merged[iter].squeeze()
             non_z_idxs = torch.nonzero(masks)
-            #print("masks.shape = ", masks.shape)
-            non_z_idxs = (non_z_idxs/4).to(torch.long) - 1 #/4 because the features are (1/4)th size of image space
-            
+            # 1/4 because the features are (1/4)th size of image space
+            non_z_idxs = (non_z_idxs/4).to(torch.long) - 1 
+
+            # Backprob is thought the output so clone it         
             masked_outputs = outputs.clone()
             unmasked_outputs = outputs.clone()
+            #non_masked = outputs.clone()
 
-            #print(unmasked_outputs.shape)
             unmasked_outputs[:, :, masks!=0] = 0 # NON_TV
             masked_outputs[:, :, masks==0] = 0 # TV
+            
 
+            #with torch.no_grad():
             # Gets features from rendered output 
-            x_feats_all = self.get_feats(masked_outputs, all_layers)
+            x_feats_all = self.get_feats(unmasked_outputs, all_layers)
 
-            # print("x_feats_all[0].shape = ", x_feats_all[0].shape)
+            # Gets features from rendered output (only object)
             masked_x_feats_all = self.get_feats(masked_outputs, all_layers)
 
             feature_mask = torch.zeros_like(x_feats_all[0])
@@ -279,6 +298,8 @@ class NNFMLoss(torch.nn.Module):
             with torch.no_grad():
                 s_feats_all = self.get_feats(styles[iter:iter+1], all_layers)
                 if "content_loss" in loss_names:
+                    contents_clone = contents.clone()
+                    contents_clone[:, :, masks!=0] = 0
                     content_feats_all = self.get_feats(contents, all_layers)
 
             ix_map = {}
@@ -286,9 +307,7 @@ class NNFMLoss(torch.nn.Module):
                 ix_map[b] = a
 
             # pdb.set_trace()
-            loss_dict = dict([(x, 0.) for x in loss_names])
-            # x_feats = rendered_output features (unmasked area)
-            # s_feats = style features 
+            
             for block in blocks:
                 layers = block_indexes[block]
                 x_feats = torch.cat([x_feats_all[ix_map[ix]] for ix in layers], 1)
@@ -301,167 +320,19 @@ class NNFMLoss(torch.nn.Module):
                     # loss_dict["nnfm_loss"] += cos_loss(x_feats, target_feats)
                     # loss_dict["nnfm_loss"] += cos_loss(masked_feats, masked_target_feats)
 
-                    unmasked_target_feats = nn_feat_replace(masked_feats, s_feats)
-                    loss_dict["nnfm_loss"] += cos_loss(masked_feats, unmasked_target_feats)
+                    masked_target_feats = nn_feat_replace(masked_feats, s_feats)
+                    loss_dict["nnfm_loss"] += cos_loss(masked_feats, masked_target_feats)
 
                 if "gram_loss" in loss_names:
                     # loss_dict["gram_loss"] += torch.mean((gram_matrix(x_feats) - gram_matrix(s_feats)) ** 2)
                     # loss_dict["gram_loss"] += torch.mean((gram_matrix_mask(masked_feats) - gram_matrix(s_feats)) ** 2)
                     loss_dict["gram_loss"] += torch.mean((gram_matrix_mask(masked_feats) - gram_matrix(s_feats)) ** 2)
 
-                if "content_loss" in loss_names and iter == masks_all.shape[0]-1:
+                if "content_loss" in loss_names:
                     content_feats = torch.cat([content_feats_all[ix_map[ix]] for ix in layers], 1)
                     loss_dict["content_loss"] += torch.mean((content_feats - x_feats) ** 2)
 
-        return loss_dict
-
-
-class NNFMLoss_dish(torch.nn.Module):
-    def __init__(self, device):
-        super().__init__()
-
-        self.vgg = torchvision.models.vgg16(pretrained=True).eval().to(device)
-        self.normalize = torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
-    def get_feats(self, x, layers=[]):
-        x = self.normalize(x)
-        final_ix = max(layers)
-        outputs = []
-
-        for ix, layer in enumerate(self.vgg.features):
-            x = layer(x)
-            if ix in layers:
-                outputs.append(x)
-
-            if ix == final_ix:
-                break
-
-        return outputs
-
-    def forward(
-        self,
-        outputs,
-        styles,
-        blocks=[
-            2,
-        ],
-        loss_names=["nnfm_loss"],  # can also include 'gram_loss', 'content_loss'
-        contents=None,
-    ):
-        for x in loss_names:
-            assert x in ['nnfm_loss', 'content_loss', 'gram_loss']
-
-        block_indexes = [[1, 3], [6, 8], [11, 13, 15], [18, 20, 22], [25, 27, 29]]
-
-        blocks.sort()
-        all_layers = []
-        for block in blocks:
-            all_layers += block_indexes[block]
-
-        
-        transform = T.ToPILImage()
-        img = transform(outputs.squeeze()) # 1, 3, 378, 504
-        img_content = transform(contents.squeeze())
-
-        masks, _, _ = sam_wrapper(img_content, class_idx = 61)
-        masks = masks.squeeze()
-        intmasks = masks.to(torch.long)
-
-        plt.imsave(masks)
-        
-        # pdb.set_trace()
-
-        zero = torch.tensor(0).float().cuda()
-        outputs_unmasked = torch.where(intmasks != 0, outputs, zero)
-        # print("outputs shape = ", outputs.shape)
-
-        img_unmasked_region = outputs_unmasked[outputs_unmasked!=0]
-        # img_unmasked_region = outputs_unmasked[masks==True]
-        # print("img_unmasked_region.shape = ", img_unmasked_region.shape)
-        img_unmasked_region = img_unmasked_region.view(1, 3, -1)
-        # print(img_unmasked_region.shape)
-        
-
-        layer1d_1 = torch.nn.Conv1d(3, 3, 3, stride=2).cuda()
-        layer1d_2 = torch.nn.Conv1d(3, 3, 3, stride=2).cuda()
-        layer1d_3 = torch.nn.Conv1d(3, 3, 3, stride=2).cuda()
-
-        img_unmasked_region = layer1d_1(img_unmasked_region)
-        img_unmasked_region = layer1d_2(img_unmasked_region)
-        img_unmasked_region = layer1d_3(img_unmasked_region)
-        # print("After Conv img_unmasked_region.shape = ", img_unmasked_region.shape)
-
-        w = img_unmasked_region.shape[2]
-
-        img_unmasked_region = img_unmasked_region.unsqueeze(-1).repeat(1, 1, 1, w)
-        img_unmasked_region = torch.nn.functional.interpolate(img_unmasked_region, [378, 504])
-        
-        # print(img_unmasked_region.shape)
-
-        unmasked_region_feats_all = self.get_feats(img_unmasked_region, all_layers)
-        # print(unmasked_region_feats_all[0].shape)
-        # print(unmasked_region_feats_all[1].shape)
-        # print(unmasked_region_feats_all[2].shape)
-
-        non_z_idxs = torch.nonzero(masks)
-        # print("masks.shape = ", masks.shape)
-        non_z_idxs = (non_z_idxs/4).to(torch.long) #/4 because the features are (1/4)th size of image space
-        
-        x_feats_all = self.get_feats(outputs, all_layers)
-        # print("x_feats_all[0].shape = ", x_feats_all[0].shape)
-
-        feature_mask = torch.zeros_like(x_feats_all[0])
-
-        for idx in non_z_idxs:
-            feature_mask[:, :, idx[0], idx[1]] = 1
-
-        masked_feats_all = []
-
-        for x_feat in x_feats_all:
-            temp_feat = (x_feat).clone()
-            temp_feat_vals = temp_feat[feature_mask!=0].view(1, 256, -1)
-
-            masked_feats_all.append(temp_feat_vals) #check if reshape needed
-
-        
-        with torch.no_grad():
-            s_feats_all = self.get_feats(styles, all_layers)
-            if "content_loss" in loss_names:
-                content_feats_all = self.get_feats(contents, all_layers)
-
-        ix_map = {}
-        for a, b in enumerate(all_layers):
-            ix_map[b] = a
-
-        # pdb.set_trace()
-        loss_dict = dict([(x, 0.) for x in loss_names])
-        for block in blocks:
-            layers = block_indexes[block]
-            x_feats = torch.cat([x_feats_all[ix_map[ix]] for ix in layers], 1)
-            s_feats = torch.cat([s_feats_all[ix_map[ix]] for ix in layers], 1)
-            masked_feats = torch.cat([masked_feats_all[ix_map[ix]] for ix in layers], 1)
-            unmasked_region_feats = torch.cat([unmasked_region_feats_all[ix_map[ix]] for ix in layers], 1)
-
-
-            if "nnfm_loss" in loss_names:
-                target_feats = nn_feat_replace(x_feats, s_feats)
-                # print("TARGET SHAPES = ", x_feats.shape, target_feats.shape)
-                target_feats_unmasked = nn_feat_replace(unmasked_region_feats, s_feats)
-                # print("TARGET MASKED SHAPES = ", unmasked_region_feats.shape, target_feats_unmasked.shape)
-                # masked_target_feats = nn_feat_replace_mask(masked_feats, s_feats)
-                # loss_dict["nnfm_loss"] += cos_loss(x_feats, target_feats)
-                loss_dict["nnfm_loss"] += cos_loss(unmasked_region_feats, target_feats_unmasked)
-                # loss_dict["nnfm_loss"] += cos_loss(masked_feats, masked_target_feats)
-
-            if "gram_loss" in loss_names:
-                # loss_dict["gram_loss"] += torch.mean((gram_matrix(x_feats) - gram_matrix(s_feats)) ** 2)
-                loss_dict["gram_loss"] += torch.mean((gram_matrix(unmasked_region_feats) - gram_matrix(s_feats)) ** 2)
-                # loss_dict["gram_loss"] += torch.mean((gram_matrix_mask(masked_feats) - gram_matrix(s_feats)) ** 2)
-
-            if "content_loss" in loss_names:
-                content_feats = torch.cat([content_feats_all[ix_map[ix]] for ix in layers], 1)
-                loss_dict["content_loss"] += torch.mean((content_feats - x_feats) ** 2)
-
+        #pdb.set_trace()
         return loss_dict
 
 

@@ -317,10 +317,13 @@ def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/l
 
     # propagate through the model
     outputs = model_obj(img)
+    # dict_keys(['pred_logits', 'pred_boxes'])
 
     # keep only predictions with 0.7+ confidence
     probas = outputs["pred_logits"].softmax(-1)[0, :, :-1]
-    keep = probas.max(-1).values > 0.6
+    # last one is background ? (N-boxes, classes)
+
+    keep = probas.max(-1).values > 0.8
 
     #pdb.set_trace()
     if(probas[keep].shape[0]==0):
@@ -329,16 +332,15 @@ def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/l
     #print(probas[keep].argmax(dim = 1))
 
     tv_idx = class_id
-    out_class = probas[keep].argmax(dim = 1)
+
+    # out_class has the class idx for each box 
+    out_class = probas[keep].argmax(dim = -1)
     idx = np.isin(out_class, class_id)
-    #print(idx, out_class)
-    #idx = == tv_idx
-    probs = probas[keep][idx]
-    #print("probs.shape = ", probs.shape, keep)
-    #print("BOX SHAPE: " , outputs["pred_boxes"][0, keep][idx].shape)
-    #box_idx = probs[keep][]
-    # print("probs[box_idx_tv] = ", probs[box_idx_tv][72])
+
+    out_class_keep = out_class[idx]
     
+    probs = probas[keep][idx]
+    # Selected boxes
     bboxes_scaled = rescale_bboxes(outputs["pred_boxes"][0, keep][idx], im.size)
 
     im = np.array(im)
@@ -349,12 +351,15 @@ def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/l
         bboxes_scaled.detach(), im.shape[:2]
     )
     #print("GGG  : ", transformed_boxes.shape, im.shape)
+
+    # for each box you will get a mask
     masks, _, _ = model_seg.predict_torch(
         point_coords=None,
         point_labels=None,
         boxes=transformed_boxes.cuda(),
         multimask_output=False,
     )
+    # (1, 1, W, H)
 
     fig = plt.figure(figsize=(10, 10))
     plt.imshow(im)
@@ -386,7 +391,7 @@ def inference(im, transform, model_obj, model_seg, class_id , folder="ckpt_arf/l
     # name = folder + 'test_' + filename[-7:-4] + '.png'
     # plt.savefig(name)
     # plt.close()
-    return masks, bboxes_scaled, mat
+    return masks, bboxes_scaled, mat, out_class_keep
 
 def sam_wrapper(img, class_idx):
     sam_checkpoint = "sam_vit_h_4b8939.pth"
@@ -397,9 +402,9 @@ def sam_wrapper(img, class_idx):
     transforms = get_transforms(img_size)
     obj_model, seg_model = get_models(detr_version, model_type, sam_checkpoint)
 
-    masks, boxes, out_img = inference(img, transforms, obj_model, seg_model, class_idx)
+    masks, boxes, out_img, out_class = inference(img, transforms, obj_model, seg_model, class_idx)
 
-    return masks, boxes, out_img
+    return masks, boxes, out_img, out_class
 
 def main():
     sam_checkpoint = "sam_vit_h_4b8939.pth"

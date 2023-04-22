@@ -44,6 +44,9 @@ config_util.define_common_args(parser)
 #### ARF parameters
 parser.add_argument("--init_ckpt", type=str, default="", help="initial checkpoint to load")
 parser.add_argument("--style", type=str, help="path to style image")
+parser.add_argument("--style_idxs", nargs='+', help="style idxs")
+parser.add_argument("--class_idxs", nargs='+', help="class idxs")
+
 parser.add_argument("--content_weight", type=float, default=5e-3, help="content loss weight")
 parser.add_argument("--img_tv_weight", type=float, default=1, help="image tv loss weight")
 parser.add_argument(
@@ -73,6 +76,7 @@ parser.add_argument(
 parser.add_argument("--no_pre_ct", action="store_true", default=False)
 parser.add_argument("--no_post_ct", action="store_true", default=False)
 #### END of ARF parameters
+
 
 
 group = parser.add_argument_group("general")
@@ -403,6 +407,14 @@ group.add_argument(
 args = parser.parse_args()
 config_util.maybe_merge_config_file(args)
 
+style_idxs = [int(x) for x in args.style_idxs]
+
+print("args.style_idxs = ", style_idxs)
+
+class_idxs = [int(x) for x in args.class_idxs]
+
+print("args.class_idxs = ", class_idxs)
+
 assert args.lr_sigma_final <= args.lr_sigma, "lr_sigma must be >= lr_sigma_final"
 assert args.lr_sh_final <= args.lr_sh, "lr_sh must be >= lr_sh_final"
 assert args.lr_basis_final <= args.lr_basis, "lr_basis must be >= lr_basis_final"
@@ -537,10 +549,23 @@ def get_style_img(file_path):
 
 
 ## change Style
-style1 = get_style_img("../data/styles/128.jpg")
-style2 = get_style_img("../data/styles/7.jpg")
-print(style1.shape, style2.shape)
-styles = torch.cat((style1,style2),0)
+# style1 = get_style_img("../data/styles/19.jpg")
+# style2 = get_style_img("../data/styles/115.jpg")
+# style3 = get_style_img("../data/styles/7.jpg")
+
+styles = []
+
+for style_idx in style_idxs:
+    path_to_style = "../data/styles/" + str(style_idx) + ".jpg"
+    style_img = get_style_img(path_to_style)
+
+    styles.append(style_img)
+
+styles = torch.cat(styles)
+
+
+# print(style1.shape, style2.shape)
+# styles = torch.cat((style1, style2, style3),0)
 ic("Style image: ", args.style, styles.shape)
 
 
@@ -640,6 +665,7 @@ while True:
                             scale_factor=0.5,
                             mode="bilinear",
                         ),
+                        class_idxs = class_idxs,
                     )
                     loss_dict["content_loss"] *= args.content_weight
                     loss_dict["img_tv_loss"] = img_tv_loss
@@ -666,7 +692,7 @@ while True:
 
                 # Stats
                 for x in loss_dict:
-                    print(x, loss_dict[x])
+                    # print(x, loss_dict[x])
                     stats[x] = loss_dict[x]
 
             if (iter_id + 1) % args.print_every == 0:
